@@ -19,8 +19,8 @@ ret=0
 ksft_skip=4
 
 # all tests in this script. Can be overridden with -t option
-IPV4_TESTS="ipv4_fcnal ipv4_grp_fcnal ipv4_withv6_fcnal ipv4_fcnal_runtime"
-IPV6_TESTS="ipv6_fcnal ipv6_grp_fcnal ipv6_fcnal_runtime"
+IPV4_TESTS="ipv4_fcnal ipv4_grp_fcnal ipv4_withv6_fcnal ipv4_fcnal_runtime ipv4_large_grp"
+IPV6_TESTS="ipv6_fcnal ipv6_grp_fcnal ipv6_fcnal_runtime ipv6_large_grp"
 
 ALL_TESTS="basic ${IPV4_TESTS} ${IPV6_TESTS}"
 TESTS="${ALL_TESTS}"
@@ -251,6 +251,60 @@ check_route6()
 	out=$($IP -6 route ls match ${pfx} 2>/dev/null)
 
 	check_output "${out}" "${expected}"
+}
+
+check_large_grp()
+{
+	local ipv=$1
+	local ecmp=$2
+	local grpnum=100
+	local nhidstart=100
+	local grpidstart=1000
+	local iter=0
+	local nhidstr=""
+	local grpidstr=""
+	local grpstr=""
+	local ipstr=""
+
+	if [ $ipv -eq 4 ]; then
+		ipstr="172.16.1."
+	else
+		ipstr="2001:db8:91::"
+	fi
+
+	#
+	# Create $grpnum groups with specified $ecmp and dump them
+	#
+
+	# create nexthops with different gateways
+	iter=2
+	while [ $iter -le $(($ecmp + 1)) ]
+	do
+		nhidstr="$(($nhidstart + $iter))"
+		run_cmd "$IP nexthop add id $nhidstr via $ipstr$iter dev veth1"
+		check_nexthop "id $nhidstr" "id $nhidstr via $ipstr$iter dev veth1 scope link"
+
+		if [ $iter -le $ecmp ]; then
+			grpstr+="$nhidstr/"
+		else
+			grpstr+="$nhidstr"
+		fi
+		((iter++))
+	done
+
+	# create duplicate large ecmp groups
+	iter=0
+	while [ $iter -le $grpnum ]
+	do
+		grpidstr="$(($grpidstart + $iter))"
+		run_cmd "$IP nexthop add id $grpidstr group $grpstr"
+		check_nexthop "id $grpidstr" "id $grpidstr group $grpstr"
+		((iter++))
+	done
+
+	# dump large groups
+	run_cmd "$IP nexthop list"
+	log_test $? 0 "Dump large (x$ecmp) ecmp groups"
 }
 
 ################################################################################
@@ -517,6 +571,19 @@ ipv6_fcnal_runtime()
 	# existing route with old nexthop; replace route with new
 	# existing route with new nexthop; replace route with old
 	# route with src address and using nexthop - not allowed
+}
+
+ipv6_large_grp()
+{
+	local ecmp=32
+
+	echo
+	echo "IPv6 large groups (x$ecmp)"
+	echo "---------------------"
+
+	check_large_grp 6 $ecmp
+
+	$IP nexthop flush >/dev/null 2>&1
 }
 
 ipv4_fcnal()
@@ -878,6 +945,19 @@ ipv4_fcnal_runtime()
 	log_test $? 0 "IPv4 route with MPLS encap and v6 gateway"
 	check_nexthop "id 52" "id 52 encap mpls 102 via 2001:db8:91::2 dev veth1 scope link"
 	log_test $? 0 "IPv4 route with MPLS encap, v6 gw - check"
+}
+
+ipv4_large_grp()
+{
+	local ecmp=32
+
+	echo
+	echo "IPv4 large groups (x$ecmp)"
+	echo "---------------------"
+
+	check_large_grp 4 $ecmp
+
+	$IP nexthop flush >/dev/null 2>&1
 }
 
 basic()
