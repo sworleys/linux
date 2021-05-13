@@ -30,6 +30,8 @@ static const struct nla_policy rtm_nh_policy_new[] = {
 	[NHA_GROUP]		= { .type = NLA_BINARY },
 	[NHA_GROUP_TYPE]	= { .type = NLA_U16 },
 	[NHA_BLACKHOLE]		= { .type = NLA_FLAG },
+	[NHA_UNREACHABLE]	= { .type = NLA_FLAG },
+	[NHA_PROHIBIT]		= { .type = NLA_FLAG },
 	[NHA_OIF]		= { .type = NLA_U32 },
 	[NHA_GATEWAY]		= { .type = NLA_BINARY },
 	[NHA_ENCAP_TYPE]	= { .type = NLA_U16 },
@@ -92,6 +94,9 @@ __nh_notifier_single_info_init(struct nh_notifier_single_info *nh_info,
 		nh_info->ipv6 = nhi->fib_nhc.nhc_gw.ipv6;
 
 	nh_info->is_reject = nhi->reject_nh;
+	if (nh_info->is_reject)
+		nh_info->reject_type = nhi->reject_type;
+
 	nh_info->is_fdb = nhi->fdb_nh;
 	nh_info->has_encap = !!nhi->fib_nhc.nhc_lwtstate;
 }
@@ -697,6 +702,7 @@ static int nh_fill_node(struct sk_buff *skb, struct nexthop *nh,
 	struct nlmsghdr *nlh;
 	struct nh_info *nhi;
 	struct nhmsg *nhm;
+	int bh_type;
 
 	nlh = nlmsg_put(skb, portid, seq, event, sizeof(*nhm), nlflags);
 	if (!nlh)
@@ -725,7 +731,18 @@ static int nh_fill_node(struct sk_buff *skb, struct nexthop *nh,
 	nhi = rtnl_dereference(nh->nh_info);
 	nhm->nh_family = nhi->family;
 	if (nhi->reject_nh) {
-		if (nla_put_flag(skb, NHA_BLACKHOLE))
+		switch(nhi->reject_type) {
+		case NH_BLACKHOLE:
+			bh_type = NHA_BLACKHOLE;
+			break;
+		case NH_UNREACHABLE:
+			bh_type = NHA_UNREACHABLE;
+			break;
+		case NH_PROHIBIT
+			bh_type = NHA_PROHIBIT;
+			break;
+		}
+		if (nla_put_flag(skb, bh_type))
 			goto nla_put_failure;
 		goto out;
 	} else if (nhi->fdb_nh) {
@@ -2575,7 +2592,7 @@ static struct nexthop *nexthop_create(struct net *net, struct nh_config *cfg,
 	if (cfg->nh_fdb)
 		nhi->fdb_nh = 1;
 
-	if (cfg->nh_blackhole) {
+	if (cfg->nh_blackhole || cfg->nh_unreachable || cfg->nh_prohibit) {
 		nhi->reject_nh = 1;
 		cfg->nh_ifindex = net->loopback_dev->ifindex;
 	}

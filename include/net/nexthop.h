@@ -27,6 +27,8 @@ struct nh_config {
 	u8		nh_family;
 	u8		nh_protocol;
 	u8		nh_blackhole;
+	u8		nh_unreachable;
+	u8		nh_prohibit;
 	u8		nh_fdb;
 	u32		nh_flags;
 
@@ -54,6 +56,12 @@ struct nh_config {
 	struct nl_info	nlinfo;
 };
 
+enum nh_reject_type {
+	NH_BLACKHOLE,
+	NH_UNREACHABLE,
+	NH_PROHIBIT,
+};
+
 struct nh_info {
 	struct hlist_node	dev_hash;    /* entry on netns devhash */
 	struct nexthop		*nh_parent;
@@ -66,6 +74,7 @@ struct nh_info {
 		struct fib_nh_common	fib_nhc;
 		struct fib_nh		fib_nh;
 		struct fib6_nh		fib6_nh;
+		enum nh_reject_type	reject_type;
 	};
 };
 
@@ -333,7 +342,43 @@ int nexthop_mpath_fill_node(struct sk_buff *skb, struct nexthop *nh,
 }
 
 /* called with rcu lock */
+static inline bool nexthop_is_reject_type(const struct nexthop *nh, enum nh_reject_type *type)
+{
+	const struct nh_info *nhi;
+
+	if (nh->is_group) {
+		struct nh_group *nh_grp;
+
+		nh_grp = rcu_dereference_rtnl(nh->nh_grp);
+		if (nh_grp->num_nh > 1)
+			return false;
+
+		nh = nh_grp->nh_entries[0].nh;
+	}
+	nhi = rcu_dereference_rtnl(nh->nh_info);
+
+	if (nhi->reject_type == type)
+		return true;
+
+	return false;
+}
+
 static inline bool nexthop_is_blackhole(const struct nexthop *nh)
+{
+	return nexthop_is_reject_type(nh, NH_BLACKHOLE);
+}
+
+static inline bool nexthop_is_unreachable(const struct nexthop *nh)
+{
+	return nexthop_is_reject_type(nh, NH_UNREACHABLE);
+}
+
+static inline bool nexthop_is_prohibit(const struct nexthop *nh)
+{
+	return nexthop_is_reject_type(nh, NH_PROHIBIT);
+}
+
+static inline bool nexthop_is_reject(const struct nexthop *nh)
 {
 	const struct nh_info *nhi;
 
@@ -348,7 +393,7 @@ static inline bool nexthop_is_blackhole(const struct nexthop *nh)
 	}
 
 	nhi = rcu_dereference_rtnl(nh->nh_info);
-	return nhi->reject_nh;
+	return nhi->nh_reject;
 }
 
 static inline void nexthop_path_fib_result(struct fib_result *res, int hash)
