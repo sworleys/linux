@@ -67,14 +67,14 @@ struct nh_info {
 	struct nexthop		*nh_parent;
 
 	u8			family;
-	bool			reject_nh;
 	bool			fdb_nh;
+	bool			reject_nh;
+	enum nh_reject_type	reject_type;
 
 	union {
 		struct fib_nh_common	fib_nhc;
 		struct fib_nh		fib_nh;
 		struct fib6_nh		fib6_nh;
-		enum nh_reject_type	reject_type;
 	};
 };
 
@@ -182,6 +182,7 @@ struct nh_notifier_single_info {
 		__be32 ipv4;
 		struct in6_addr ipv6;
 	};
+	enum nh_reject_type reject_type;
 	u8 is_reject:1,
 	   is_fdb:1,
 	   has_encap:1;
@@ -342,7 +343,34 @@ int nexthop_mpath_fill_node(struct sk_buff *skb, struct nexthop *nh,
 }
 
 /* called with rcu lock */
-static inline bool nexthop_is_reject_type(const struct nexthop *nh, enum nh_reject_type *type)
+static inline unsigned char nexthop_reject_type_to_rtn(const struct nexthop *nh)
+{
+	const struct nh_info *nhi;
+
+	if (nh->is_group) {
+		struct nh_group *nh_grp;
+
+		nh_grp = rcu_dereference_rtnl(nh->nh_grp);
+		if (nh_grp->num_nh > 1)
+			return RTN_UNSPEC;
+
+		nh = nh_grp->nh_entries[0].nh;
+	}
+	nhi = rcu_dereference_rtnl(nh->nh_info);
+
+	switch (nhi->reject_type) {
+	case NH_BLACKHOLE:
+		return RTN_BLACKHOLE;
+	case NH_UNREACHABLE:
+		return RTN_UNREACHABLE;
+	case NH_PROHIBIT:
+		return RTN_PROHIBIT;
+	}
+
+	return RTN_UNSPEC;
+}
+
+static inline bool nexthop_is_reject_type(const struct nexthop *nh, enum nh_reject_type type)
 {
 	const struct nh_info *nhi;
 
@@ -356,6 +384,9 @@ static inline bool nexthop_is_reject_type(const struct nexthop *nh, enum nh_reje
 		nh = nh_grp->nh_entries[0].nh;
 	}
 	nhi = rcu_dereference_rtnl(nh->nh_info);
+
+	if (!nhi->reject_nh)
+		return false;
 
 	if (nhi->reject_type == type)
 		return true;
@@ -393,7 +424,7 @@ static inline bool nexthop_is_reject(const struct nexthop *nh)
 	}
 
 	nhi = rcu_dereference_rtnl(nh->nh_info);
-	return nhi->nh_reject;
+	return nhi->reject_nh;
 }
 
 static inline void nexthop_path_fib_result(struct fib_result *res, int hash)

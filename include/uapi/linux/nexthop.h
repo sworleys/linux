@@ -41,7 +41,7 @@ enum {
 	NHA_BLACKHOLE,	/* flag; nexthop used to blackhole packets */
 	NHA_UNREACHABLE,	/* flag; nexthop is unreacable */
 	NHA_PROHIBIT,	/* flag; nexthop adiminstratively prohibited */
-	/* Only one of BLACKHOLE|UNREACHABLE|PROHIBIT can be set.
+	/* Only one of BLACKHOLE, UNREACHABLE, or PROHIBIT can be set.
 	 * OIF, GATEWAY, ENCAP can not be set if any of them they are.
 	 */
 
@@ -57,7 +57,7 @@ enum {
 	NHA_MASTER,	/* u32;  only return nexthops with given master dev */
 
 	NHA_FDB,	/* flag; nexthop belongs to a bridge fdb */
-	/* if NHA_FDB is added, OIF, BLACKHOLE, ENCAP cannot be set */
+	/* if NHA_FDB is added, OIF, BLACKHOLE, UNREACHABLE, PROHIBIT, ENCAP cannot be set */
 
 	/* nested; resilient nexthop group attributes */
 	NHA_RES_GROUP,

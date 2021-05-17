@@ -511,7 +511,7 @@ static struct fib6_nh *rt6_nh_dev_match(struct net *net, struct nexthop *nh,
 		.flags = flags,
 	};
 
-	if (nexthop_is_blackhole(nh))
+	if (nexthop_is_reject(nh))
 		return NULL;
 
 	if (nexthop_for_each_fib6_nh(nh, __rt6_nh_dev_match, &arg))
@@ -530,7 +530,7 @@ static void rt6_device_match(struct net *net, struct fib6_result *res,
 	if (!oif && ipv6_addr_any(saddr)) {
 		if (unlikely(f6i->nh)) {
 			nh = nexthop_fib6_nh(f6i->nh);
-			if (nexthop_is_blackhole(f6i->nh))
+			if (nexthop_is_reject(f6i->nh))
 				goto out_blackhole;
 		} else {
 			nh = f6i->fib6_nh;
@@ -566,7 +566,7 @@ static void rt6_device_match(struct net *net, struct fib6_result *res,
 
 	if (unlikely(f6i->nh)) {
 		nh = nexthop_fib6_nh(f6i->nh);
-		if (nexthop_is_blackhole(f6i->nh))
+		if (nexthop_is_reject(f6i->nh))
 			goto out_blackhole;
 	} else {
 		nh = f6i->fib6_nh;
@@ -584,7 +584,7 @@ out:
 
 out_blackhole:
 	res->fib6_flags |= RTF_REJECT;
-	res->fib6_type = RTN_BLACKHOLE;
+	res->fib6_type = nexthop_reject_type_to_rtn(f6i->nh);
 	res->nh = nh;
 }
 
@@ -808,9 +808,9 @@ static void __find_rr_leaf(struct fib6_info *f6i_start,
 				.do_rr  = do_rr
 			};
 
-			if (nexthop_is_blackhole(f6i->nh)) {
+			if (nexthop_is_reject(f6i->nh)) {
 				res->fib6_flags = RTF_REJECT;
-				res->fib6_type = RTN_BLACKHOLE;
+				res->fib6_type = nexthop_reject_type_to_rtn(f6i->nh);
 				res->f6i = f6i;
 				res->nh = nexthop_fib6_nh(f6i->nh);
 				return;
@@ -2944,7 +2944,7 @@ restart:
 		if (rt->fib6_flags & RTF_REJECT)
 			break;
 		if (unlikely(rt->nh)) {
-			if (nexthop_is_blackhole(rt->nh))
+			if (nexthop_is_reject(rt->nh))
 				continue;
 			/* on match, res->nh is filled in and potentially ret */
 			if (nexthop_for_each_fib6_nh(rt->nh,
@@ -5574,8 +5574,8 @@ static int rt6_fill_node(struct net *net, struct sk_buff *skb,
 		if (nla_put_u32(skb, RTA_NH_ID, rt->nh->id))
 			goto nla_put_failure;
 
-		if (nexthop_is_blackhole(rt->nh))
-			rtm->rtm_type = RTN_BLACKHOLE;
+		if (nexthop_is_reject(rt->nh))
+			rtm->rtm_type = nexthop_reject_type_to_rtn(rt->nh);
 
 		if (net->ipv4.sysctl_nexthop_compat_mode &&
 		    rt6_fill_node_nexthop(skb, rt->nh, &nh_flags) < 0)

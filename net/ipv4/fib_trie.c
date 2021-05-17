@@ -1408,6 +1408,7 @@ static inline t_key prefix_mismatch(t_key key, struct key_vector *n)
 	return (key ^ prefix) & (prefix | -prefix);
 }
 
+/*
 int fib_lookup_get_reject_type(const struct nexthop *nh)
 {
 	int err;
@@ -1421,6 +1422,7 @@ int fib_lookup_get_reject_type(const struct nexthop *nh)
 
 	return err;
 }
+*/
 
 bool fib_lookup_good_nhc(const struct fib_nh_common *nhc, int fib_flags,
 			 const struct flowi4 *flp)
@@ -1602,7 +1604,7 @@ out_reject:
 
 		if (unlikely(fi->nh)) {
 			if (nexthop_is_reject(fi->nh)) {
-				err = fib_lookup_get_reject_type(fi->nh);
+				err = fib_props[nexthop_reject_type_to_rtn(fi->nh)].error;
 				goto out_reject;
 			}
 
