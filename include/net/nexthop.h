@@ -27,6 +27,8 @@ struct nh_config {
 	u8		nh_family;
 	u8		nh_protocol;
 	u8		nh_blackhole;
+	u8		nh_unreachable;
+	u8		nh_prohibit;
 	u8		nh_fdb;
 	u32		nh_flags;
 
@@ -54,13 +56,20 @@ struct nh_config {
 	struct nl_info	nlinfo;
 };
 
+enum nh_reject_type {
+	NH_BLACKHOLE,
+	NH_UNREACHABLE,
+	NH_PROHIBIT,
+};
+
 struct nh_info {
 	struct hlist_node	dev_hash;    /* entry on netns devhash */
 	struct nexthop		*nh_parent;
 
 	u8			family;
-	bool			reject_nh;
 	bool			fdb_nh;
+	bool			reject_nh;
+	enum nh_reject_type	reject_type;
 
 	union {
 		struct fib_nh_common	fib_nhc;
@@ -173,6 +182,7 @@ struct nh_notifier_single_info {
 		__be32 ipv4;
 		struct in6_addr ipv6;
 	};
+	enum nh_reject_type reject_type;
 	u8 is_reject:1,
 	   is_fdb:1,
 	   has_encap:1;
@@ -333,7 +343,74 @@ int nexthop_mpath_fill_node(struct sk_buff *skb, struct nexthop *nh,
 }
 
 /* called with rcu lock */
+static inline unsigned char nexthop_reject_type_to_rtn(const struct nexthop *nh)
+{
+	const struct nh_info *nhi;
+
+	if (nh->is_group) {
+		struct nh_group *nh_grp;
+
+		nh_grp = rcu_dereference_rtnl(nh->nh_grp);
+		if (nh_grp->num_nh > 1)
+			return RTN_UNSPEC;
+
+		nh = nh_grp->nh_entries[0].nh;
+	}
+	nhi = rcu_dereference_rtnl(nh->nh_info);
+
+	switch (nhi->reject_type) {
+	case NH_BLACKHOLE:
+		return RTN_BLACKHOLE;
+	case NH_UNREACHABLE:
+		return RTN_UNREACHABLE;
+	case NH_PROHIBIT:
+		return RTN_PROHIBIT;
+	}
+
+	return RTN_UNSPEC;
+}
+
+static inline bool nexthop_is_reject_type(const struct nexthop *nh,
+					  enum nh_reject_type type)
+{
+	const struct nh_info *nhi;
+
+	if (nh->is_group) {
+		struct nh_group *nh_grp;
+
+		nh_grp = rcu_dereference_rtnl(nh->nh_grp);
+		if (nh_grp->num_nh > 1)
+			return false;
+
+		nh = nh_grp->nh_entries[0].nh;
+	}
+	nhi = rcu_dereference_rtnl(nh->nh_info);
+
+	if (!nhi->reject_nh)
+		return false;
+
+	if (nhi->reject_type == type)
+		return true;
+
+	return false;
+}
+
 static inline bool nexthop_is_blackhole(const struct nexthop *nh)
+{
+	return nexthop_is_reject_type(nh, NH_BLACKHOLE);
+}
+
+static inline bool nexthop_is_unreachable(const struct nexthop *nh)
+{
+	return nexthop_is_reject_type(nh, NH_UNREACHABLE);
+}
+
+static inline bool nexthop_is_prohibit(const struct nexthop *nh)
+{
+	return nexthop_is_reject_type(nh, NH_PROHIBIT);
+}
+
+static inline bool nexthop_is_reject(const struct nexthop *nh)
 {
 	const struct nh_info *nhi;
 

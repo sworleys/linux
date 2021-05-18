@@ -1587,8 +1587,10 @@ out_reject:
 			continue;
 
 		if (unlikely(fi->nh)) {
-			if (nexthop_is_blackhole(fi->nh)) {
-				err = fib_props[RTN_BLACKHOLE].error;
+			if (nexthop_is_reject(fi->nh)) {
+				int rtn = nexthop_reject_type_to_rtn(fi->nh);
+
+				err = fib_props[rtn].error;
 				goto out_reject;
 			}
 
