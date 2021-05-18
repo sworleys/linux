@@ -30,6 +30,8 @@ static const struct nla_policy rtm_nh_policy_new[] = {
 	[NHA_GROUP]		= { .type = NLA_BINARY },
 	[NHA_GROUP_TYPE]	= { .type = NLA_U16 },
 	[NHA_BLACKHOLE]		= { .type = NLA_FLAG },
+	[NHA_UNREACHABLE]	= { .type = NLA_FLAG },
+	[NHA_PROHIBIT]		= { .type = NLA_FLAG },
 	[NHA_OIF]		= { .type = NLA_U32 },
 	[NHA_GATEWAY]		= { .type = NLA_BINARY },
 	[NHA_ENCAP_TYPE]	= { .type = NLA_U16 },
@@ -91,7 +93,11 @@ __nh_notifier_single_info_init(struct nh_notifier_single_info *nh_info,
 	else if (nh_info->gw_family == AF_INET6)
 		nh_info->ipv6 = nhi->fib_nhc.nhc_gw.ipv6;
 
-	nh_info->is_reject = nhi->reject_nh;
+	if (nh_info->is_reject) {
+		nh_info->is_reject = nhi->reject_nh;
+		nh_info->reject_type = nhi->reject_type;
+	}
+
 	nh_info->is_fdb = nhi->fdb_nh;
 	nh_info->has_encap = !!nhi->fib_nhc.nhc_lwtstate;
 }
@@ -697,6 +703,7 @@ static int nh_fill_node(struct sk_buff *skb, struct nexthop *nh,
 	struct nlmsghdr *nlh;
 	struct nh_info *nhi;
 	struct nhmsg *nhm;
+	int bh_type;
 
 	nlh = nlmsg_put(skb, portid, seq, event, sizeof(*nhm), nlflags);
 	if (!nlh)
@@ -725,7 +732,18 @@ static int nh_fill_node(struct sk_buff *skb, struct nexthop *nh,
 	nhi = rtnl_dereference(nh->nh_info);
 	nhm->nh_family = nhi->family;
 	if (nhi->reject_nh) {
-		if (nla_put_flag(skb, NHA_BLACKHOLE))
+		switch (nhi->reject_type) {
+		case NH_BLACKHOLE:
+			bh_type = NHA_BLACKHOLE;
+			break;
+		case NH_UNREACHABLE:
+			bh_type = NHA_UNREACHABLE;
+			break;
+		case NH_PROHIBIT:
+			bh_type = NHA_PROHIBIT;
+			break;
+		}
+		if (nla_put_flag(skb, bh_type))
 			goto nla_put_failure;
 		goto out;
 	} else if (nhi->fdb_nh) {
@@ -797,8 +815,9 @@ static size_t nh_nlmsg_size_single(struct nexthop *nh)
 	struct nh_info *nhi = rtnl_dereference(nh->nh_info);
 	size_t sz;
 
-	/* covers NHA_BLACKHOLE since NHA_OIF and BLACKHOLE
-	 * are mutually exclusive
+	/* covers NHA_BLACKHOLE, NHA_UNREACHABLE, or NHA_PROHIBIT
+	 * since NHA_OIF, BLACKHOLE, UNREACHABLE, and PROHIBIT
+	 * are mutually exclusive.
 	 */
 	sz = nla_total_size(4);  /* NHA_OIF */
 
@@ -2200,6 +2219,7 @@ static int replace_nexthop(struct net *net, struct nexthop *old,
 			   struct netlink_ext_ack *extack)
 {
 	bool new_is_reject = false;
+	int new_reject_type;
 	struct nh_grp_entry *nhge;
 	int err;
 
@@ -2218,15 +2238,32 @@ static int replace_nexthop(struct net *net, struct nexthop *old,
 		struct nh_info *nhi = rtnl_dereference(new->nh_info);
 
 		new_is_reject = nhi->reject_nh;
+		new_reject_type = nhi->reject_type;
 	}
 
 	list_for_each_entry(nhge, &old->grp_list, nh_list) {
-		/* if new nexthop is a blackhole, any groups using this
+		/* if new nexthop is a blackhole|unreachable|prohbit, any groups using this
 		 * nexthop cannot have more than 1 path
 		 */
 		if (new_is_reject &&
 		    nexthop_num_path(nhge->nh_parent) > 1) {
-			NL_SET_ERR_MSG(extack, "Blackhole nexthop can not be a member of a group with more than one path");
+			switch (new_reject_type) {
+			case NH_BLACKHOLE:
+				NL_SET_ERR_MSG(
+					extack,
+					"Blackhole nexthop can not be a member of a group with more than one path");
+				break;
+			case NH_UNREACHABLE:
+				NL_SET_ERR_MSG(
+					extack,
+					"Unreachable nexthop can not be a member of a group with more than one path");
+				break;
+			case NH_PROHIBIT:
+				NL_SET_ERR_MSG(
+					extack,
+					"Prohibit nexthop can not be a member of a group with more than one path");
+				break;
+			}
 			return -EINVAL;
 		}
 
@@ -2577,6 +2614,15 @@ static struct nexthop *nexthop_create(struct net *net, struct nh_config *cfg,
 
 	if (cfg->nh_blackhole) {
 		nhi->reject_nh = 1;
+		nhi->reject_type = NH_BLACKHOLE;
+		cfg->nh_ifindex = net->loopback_dev->ifindex;
+	} else if (cfg->nh_unreachable) {
+		nhi->reject_nh = 1;
+		nhi->reject_type = NH_UNREACHABLE;
+		cfg->nh_ifindex = net->loopback_dev->ifindex;
+	} else if (cfg->nh_prohibit) {
+		nhi->reject_nh = 1;
+		nhi->reject_type = NH_PROHIBIT;
 		cfg->nh_ifindex = net->loopback_dev->ifindex;
 	}
 
@@ -2762,8 +2808,8 @@ static int rtm_to_nh_config(struct net *net, struct sk_buff *skb,
 		cfg->nh_id = nla_get_u32(tb[NHA_ID]);
 
 	if (tb[NHA_FDB]) {
-		if (tb[NHA_OIF] || tb[NHA_BLACKHOLE] ||
-		    tb[NHA_ENCAP]   || tb[NHA_ENCAP_TYPE]) {
+		if (tb[NHA_OIF] || tb[NHA_BLACKHOLE] || tb[NHA_UNREACHABLE] ||
+		    tb[NHA_PROHIBIT] || tb[NHA_ENCAP] || tb[NHA_ENCAP_TYPE]) {
 			NL_SET_ERR_MSG(extack, "Fdb attribute can not be used with encap, oif or blackhole");
 			goto out;
 		}
@@ -2803,13 +2849,46 @@ static int rtm_to_nh_config(struct net *net, struct sk_buff *skb,
 	}
 
 	if (tb[NHA_BLACKHOLE]) {
-		if (tb[NHA_GATEWAY] || tb[NHA_OIF] ||
-		    tb[NHA_ENCAP]   || tb[NHA_ENCAP_TYPE] || tb[NHA_FDB]) {
-			NL_SET_ERR_MSG(extack, "Blackhole attribute can not be used with gateway, oif, encap or fdb");
+		if (tb[NHA_GATEWAY] || tb[NHA_OIF] || tb[NHA_ENCAP] ||
+		    tb[NHA_ENCAP_TYPE] || tb[NHA_FDB] || tb[NHA_UNREACHABLE] ||
+		    tb[NHA_PROHIBIT]) {
+			NL_SET_ERR_MSG(
+				extack,
+				"Blackhole attribute can not be used with gateway, oif, encap, fdb, unreachable, or prohibit");
 			goto out;
 		}
 
 		cfg->nh_blackhole = 1;
+		err = 0;
+		goto out;
+	}
+
+	if (tb[NHA_UNREACHABLE]) {
+		if (tb[NHA_GATEWAY] || tb[NHA_OIF] || tb[NHA_ENCAP] ||
+		    tb[NHA_ENCAP_TYPE] || tb[NHA_FDB] || tb[NHA_BLACKHOLE] ||
+		    tb[NHA_PROHIBIT]) {
+			NL_SET_ERR_MSG(
+				extack,
+				"Unreachable attribute can not be used with gateway, oif, encap, fdb, blackhole, or prohibit");
+			goto out;
+		}
+
+		cfg->nh_unreachable = 1;
+		err = 0;
+		goto out;
+	}
+
+	if (tb[NHA_PROHIBIT]) {
+		if (tb[NHA_GATEWAY] || tb[NHA_OIF] || tb[NHA_ENCAP] ||
+		    tb[NHA_ENCAP_TYPE] || tb[NHA_FDB] || tb[NHA_BLACKHOLE] ||
+		    tb[NHA_UNREACHABLE]) {
+			NL_SET_ERR_MSG(
+				extack,
+				"Prohibit attribute can not be used with gateway, oif, encap, fdb, unreachable, or blackhole");
+			goto out;
+		}
+
+		cfg->nh_prohibit = 1;
 		err = 0;
 		goto out;
 	}
